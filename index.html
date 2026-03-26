@@ -70,9 +70,11 @@
         .setting-group { margin-bottom: 15px; padding: 10px; background: #f0f4f7; border-radius: 8px; }
         .grid-input { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
         input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; font-size: 13px; }
-        .btn-main { background: var(--success); color: white; border: none; padding: 16px; width: 100%; border-radius: 10px; font-weight: bold; cursor: pointer; font-size: 16px; transition: 0.3s; margin-top: 10px; }
-        .btn-lock { background: var(--primary); color: white; border: none; padding: 12px; width: 100%; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 13px; margin-bottom: 10px; }
-        .btn-main:disabled { background: #ccc; cursor: not-allowed; }
+        
+        .btn-main { background: var(--success); color: white; border: none; padding: 16px; width: 100%; border-radius: 10px; font-weight: bold; cursor: pointer; font-size: 16px; transition: 0.3s; margin-top: 5px; }
+        .btn-lock { background: var(--primary); color: white; border: none; padding: 12px; width: 100%; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 13px; margin-bottom: 8px; }
+        
+        .btn-main:disabled { background: #ccc; cursor: not-allowed; opacity: 0.7; }
         label { font-size: 11px; font-weight: bold; color: var(--primary); display: block; margin-bottom: 4px; }
     </style>
 </head>
@@ -134,8 +136,9 @@
 
     <div class="controls">
         <div class="setting-group">
-            <label>⚙️ PENGUNCIAN DATA</label>
+            <label>⚙️ TINDAKAN CEPAT</label>
             <button id="btn-lock-toggle" class="btn-lock" onclick="toggleLock()">🔓 KUNCI JUMLAH HADIR</button>
+            <button class="btn-main" id="btn-save" onclick="generateFastPDF()" disabled>MENUNGGU SINYAL GPS...</button>
         </div>
 
         <label>Nama OPD:</label>
@@ -152,14 +155,13 @@
             <div><label>Tugas Dinas:</label><input type="number" id="in-tugas" placeholder="0" oninput="calculateReport()"></div>
             <div><label>Izin Belajar:</label><input type="number" id="in-belajar" placeholder="0" oninput="calculateReport()"></div>
         </div>
-
-        <button class="btn-main" id="btn-save" onclick="generateFastPDF()" disabled>MENUNGGU SINYAL GPS...</button>
     </div>
 
     <script>
         const video = document.getElementById('video');
         const btnSave = document.getElementById('btn-save');
         let currentStream = null, useFrontCamera = true, isLocked = false, lockedCount = 0;
+        let detectorOptions = null;
         
         const OFFICE_LAT = -3.066494, OFFICE_LNG = 128.230482, ALLOWED_DISTANCE = 500; 
 
@@ -202,11 +204,9 @@
             document.getElementById('out-tugas').innerText = tugas;
             document.getElementById('out-belajar').innerText = belajar;
 
-            // Alpa = Total - Semua kategori kehadiran
             let alpa = total - (hadir + pppk + cuti + izin + sakit + tugas + belajar);
             document.getElementById('out-alpa').innerText = alpa < 0 ? 0 : alpa;
 
-            // Persentase = (Hadir AI + PPPK Paruh Waktu) / Total
             const totalHadirNyata = hadir + pppk;
             const perc = total > 0 ? Math.round((totalHadirNyata / total) * 100) : 0;
             document.getElementById('perc-display').innerText = perc + "%";
@@ -222,6 +222,7 @@
         async function startApp() {
             try {
                 await faceapi.nets.tinyFaceDetector.loadFromUri('https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/');
+                detectorOptions = new faceapi.TinyFaceDetectorOptions({ inputSize: 160, scoreThreshold: 0.5 });
                 initCamera();
                 initGPS();
                 setInterval(() => {
@@ -234,25 +235,32 @@
 
         async function initCamera() {
             if (currentStream) currentStream.getTracks().forEach(t => t.stop());
-            currentStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: useFrontCamera ? "user" : "environment" } });
+            currentStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: useFrontCamera ? "user" : "environment", width: 640 } });
             video.srcObject = currentStream;
-            video.onloadedmetadata = detectFaces;
+            video.onplay = () => {
+                const canvas = document.getElementById('overlay');
+                const displaySize = { width: video.clientWidth, height: video.clientHeight };
+                faceapi.matchDimensions(canvas, displaySize);
+                
+                async function step() {
+                    const detections = await faceapi.detectAllFaces(video, detectorOptions);
+                    if(!isLocked) {
+                        const count = detections.length;
+                        if(parseInt(document.getElementById('out-hadir').innerText) !== count) {
+                            document.getElementById('out-hadir').innerText = count;
+                            calculateReport();
+                        }
+                    }
+                    const ctx = canvas.getContext('2d');
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    faceapi.draw.drawDetections(canvas, faceapi.resizeResults(detections, displaySize));
+                    requestAnimationFrame(step);
+                }
+                requestAnimationFrame(step);
+            };
         }
 
         function toggleCamera() { useFrontCamera = !useFrontCamera; video.classList.toggle('mirror'); initCamera(); }
-
-        async function detectFaces() {
-            const canvas = document.getElementById('overlay');
-            const displaySize = { width: video.clientWidth, height: video.clientHeight };
-            faceapi.matchDimensions(canvas, displaySize);
-            setInterval(async () => {
-                const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions());
-                if(!isLocked) { document.getElementById('out-hadir').innerText = detections.length; calculateReport(); }
-                const ctx = canvas.getContext('2d');
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                faceapi.draw.drawDetections(canvas, faceapi.resizeResults(detections, displaySize));
-            }, 600);
-        }
 
         function initGPS() {
             navigator.geolocation.watchPosition(pos => {
